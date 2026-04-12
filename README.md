@@ -13,7 +13,7 @@ Add `mix_watch_docs` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:mix_watch_docs, "~> 0.1.0", only: :dev, runtime: false}
+    {:mix_watch_docs, "~> 0.1.1", only: :dev, runtime: false}
   ]
 end
 ```
