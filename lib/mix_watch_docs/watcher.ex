@@ -7,9 +7,18 @@ defmodule MixWatchDocs.Watcher do
   @impl true
   def init(opts) do
     debounce_ms = opts[:debounce_ms] || 500
-    {:ok, pid} = FileSystem.start_link(dirs: opts[:dirs])
-    FileSystem.subscribe(pid)
-    {:ok, %{fs_pid: pid, debounce_ms: debounce_ms, timer: nil, cooldown: false}}
+    paths_fun = opts[:paths_fun]
+    fs_pid = start_fs(paths_fun.())
+
+    {:ok,
+     %{
+       fs_pid: fs_pid,
+       paths_fun: paths_fun,
+       debounce_ms: debounce_ms,
+       timer: nil,
+       cooldown: false,
+       mix_changed: false
+     }}
   end
 
   @impl true
@@ -21,7 +30,8 @@ defmodule MixWatchDocs.Watcher do
     if source_file?(path) do
       if state.timer, do: Process.cancel_timer(state.timer)
       timer = Process.send_after(self(), :rebuild, state.debounce_ms)
-      {:noreply, %{state | timer: timer}}
+      mix_changed = state.mix_changed or Path.basename(path) == "mix.exs"
+      {:noreply, %{state | timer: timer, mix_changed: mix_changed}}
     else
       {:noreply, state}
     end
@@ -34,12 +44,33 @@ defmodule MixWatchDocs.Watcher do
 
   def handle_info(:rebuild, state) do
     Mix.Tasks.Docs.Watch.rebuild()
+
+    fs_pid =
+      if state.mix_changed do
+        stop_fs(state.fs_pid)
+        start_fs(state.paths_fun.())
+      else
+        state.fs_pid
+      end
+
     Process.send_after(self(), :cooldown_done, state.debounce_ms)
-    {:noreply, %{state | timer: nil, cooldown: true}}
+
+    {:noreply,
+     %{state | fs_pid: fs_pid, timer: nil, cooldown: true, mix_changed: false}}
   end
 
   def handle_info(:cooldown_done, state) do
     {:noreply, %{state | cooldown: false}}
+  end
+
+  defp start_fs(paths) do
+    {:ok, pid} = FileSystem.start_link(dirs: paths)
+    FileSystem.subscribe(pid)
+    pid
+  end
+
+  defp stop_fs(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1000)
   end
 
   defp source_file?(path) when is_binary(path) do

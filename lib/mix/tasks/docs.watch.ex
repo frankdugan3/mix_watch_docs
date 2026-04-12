@@ -28,16 +28,12 @@ defmodule Mix.Tasks.Docs.Watch do
 
     port = opts[:port] || @default_port
     Application.ensure_all_started(:file_system)
+    Mix.Task.run("compile")
 
-    docs_config =
-      try do
-        resolve_docs_config()
-      catch
-        _, _ -> []
-      end
-
+    docs_config = resolve_docs_config()
     doc_dir = docs_config[:output] || "doc"
-    dirs = watched_dirs(docs_config)
+    paths_fun = fn -> watched_paths(resolve_docs_config()) end
+    dirs = paths_fun.()
 
     info("Building docs...")
 
@@ -51,7 +47,12 @@ defmodule Mix.Tasks.Docs.Watch do
     end
 
     {:ok, _} = MixWatchDocs.Server.start_link(port: port, doc_dir: doc_dir)
-    {:ok, _} = MixWatchDocs.Watcher.start_link(dirs: dirs, debounce_ms: @debounce_ms)
+
+    {:ok, _} =
+      MixWatchDocs.Watcher.start_link(
+        paths_fun: paths_fun,
+        debounce_ms: @debounce_ms
+      )
 
     url = "http://localhost:#{port}"
     info("Serving docs at #{url}")
@@ -84,30 +85,50 @@ defmodule Mix.Tasks.Docs.Watch do
   end
 
   defp resolve_docs_config do
-    case Mix.Project.config()[:docs] do
-      fun when is_function(fun, 0) -> fun.()
-      config when is_list(config) -> config
-      _ -> []
+    try do
+      case Mix.Project.config()[:docs] do
+        fun when is_function(fun, 0) -> fun.()
+        config when is_list(config) -> config
+        _ -> []
+      end
+    catch
+      _, _ -> []
     end
   end
 
-  defp watched_dirs(docs_config) do
+  defp watched_paths(docs_config) do
     source_dirs = Mix.Project.config()[:elixirc_paths] || ["lib"]
 
-    extra_dirs =
+    extras_paths =
       (docs_config[:extras] || [])
       |> Enum.flat_map(fn
-        {path, _} when is_binary(path) -> [Path.dirname(path)]
-        path when is_binary(path) -> [Path.dirname(path)]
+        {path, _} when is_binary(path) -> [path]
+        path when is_binary(path) -> [path]
         _ -> []
       end)
-      |> Enum.reject(&(&1 == "."))
 
-    (source_dirs ++ extra_dirs)
-    |> Enum.map(&Path.expand/1)
-    |> Enum.uniq()
-    |> Enum.filter(&File.dir?/1)
-    |> remove_subdirs()
+    {root_extras, nested_extras} =
+      Enum.split_with(extras_paths, &(Path.dirname(&1) == "."))
+
+    dirs =
+      (source_dirs ++ Enum.map(nested_extras, &Path.dirname/1))
+      |> Enum.map(&Path.expand/1)
+      |> Enum.uniq()
+      |> Enum.filter(&File.dir?/1)
+      |> remove_subdirs()
+
+    root_files =
+      ["mix.exs" | Enum.map(root_extras, &resolve_source/1)]
+      |> Enum.uniq()
+      |> Enum.filter(&File.regular?/1)
+      |> Enum.map(&Path.expand/1)
+
+    dirs ++ root_files
+  end
+
+  defp resolve_source(path) do
+    eex = path <> ".eex"
+    if File.regular?(eex), do: eex, else: path
   end
 
   defp remove_subdirs(dirs) do
